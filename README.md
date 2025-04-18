@@ -18,6 +18,11 @@ OpenCVを使用して画像の露出を評価し、「過露出」「低露出�
 - OpenCV
 - dlib
 - scipy
+- tensorflow
+- scikit-learn
+- pillow 
+- facenet_pytorch(分類用)
+- transformers(分類用)
 
 ---
 
@@ -34,7 +39,7 @@ python detect_blink.py
 
 ### 2. 写真のグルーピング
 ```
-python detect_blink.py
+python group_similar.py.py
 ```
 
 サンプルデータ一覧

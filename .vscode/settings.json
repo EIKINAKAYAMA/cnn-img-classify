@@ -1,6 +1,8 @@
 {
     "cSpell.words": [
         "dlib",
-        "imread"
+        "imread",
+        "scikit",
+        "scipy"
     ]
 }
