@@ -18,11 +18,12 @@ OpenCVを使用して画像の露出を評価し、「過露出」「低露出�
 - OpenCV
 - dlib
 - scipy
+- mtcnn (dlibと相性が良く使いやすいので、こっちを採用)
 - tensorflow
 - scikit-learn
 - pillow 
-- facenet_pytorch(分類用)
-- transformers(分類用)
+- facenet_pytorch(顔検知としては、mtcnnより精度が高いのでgroupで使用)
+- transformers
 
 ---
 
@@ -35,18 +36,14 @@ python detect_blink.py
 
  - face1.png  / 目が開いているサンプル (default)
  - face2.png  / 目が閉じているサンプル
- - face3.png  / 顔検出に失敗するサンプル
+ - face3.png  / 目が閉じているサンプル（CNNで顔判定が可能。OpenCVのCNNなしでは不可だった）
 
 ### 2. 写真のグルーピング
 ```
-python group_similar.py.py
+python group_similar.py
 ```
 
-サンプルデータ一覧
-
- - face1.png  / 目が開いているサンプル (default)
- - face2.png  / 目が閉じているサンプル
- - face3.png  / 顔検出に失敗するサンプル
+サンプルデータ一覧（量が多いので割愛、色々なデータ）
 
 ### 3. 明るさ判定
 ```

@@ -1,7 +1,9 @@
 {
     "cSpell.words": [
         "dlib",
+        "facenet",
         "imread",
+        "mtcnn",
         "scikit",
         "scipy"
     ]

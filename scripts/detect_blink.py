@@ -2,12 +2,15 @@ import cv2
 import dlib
 import os
 from scipy.spatial import distance
+from mtcnn import MTCNN
 
 # EARしきい値
 EAR_THRESHOLD = 0.21
 
-# モデル読み込み
-detector = dlib.get_frontal_face_detector()
+# MTCNNで顔検出
+detector_mtcnn = MTCNN()
+
+# dlibのランドマークモデル
 predictor = dlib.shape_predictor('models/shape_predictor_68_face_landmarks.dat')
 
 # 目のランドマークインデックス
@@ -34,18 +37,23 @@ def process_folder(folder_path):
                 print(f"{filename}: 画像を読み込めません")
                 continue
 
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            faces = detector(gray)
+            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            results = detector_mtcnn.detect_faces(rgb)
 
             print(f"{filename}")
-            print(f"  検出された顔の数: {len(faces)}")
+            print(f"  検出された顔の数: {len(results)}")
 
-            if len(faces) == 0:
+            if len(results) == 0:
                 print(f"  → 顔が見つかりません\n")
                 continue
 
-            for i, face in enumerate(faces):
-                landmarks = predictor(gray, face)
+            for i, result in enumerate(results):
+                x, y, width, height = result['box']
+                # dlibに渡すためのrectを作成
+                rect = dlib.rectangle(left=x, top=y, right=x + width, bottom=y + height)
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                landmarks = predictor(gray, rect)
+
                 left_eye = [(landmarks.part(n).x, landmarks.part(n).y) for n in LEFT_EYE]
                 right_eye = [(landmarks.part(n).x, landmarks.part(n).y) for n in RIGHT_EYE]
 

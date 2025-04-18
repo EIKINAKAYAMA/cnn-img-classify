@@ -1,157 +1,128 @@
 import os
-from collections import defaultdict
-from datetime import datetime
-
 from PIL import Image
-from PIL.ExifTags import TAGS
-
 import torch
-from transformers import CLIPProcessor, CLIPModel
+from torchvision import models, transforms
 from facenet_pytorch import MTCNN
+import cv2
 
-# --- モデル準備 ---
-# デバイス設定
+# --- GPU or CPU 設定 ---
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# CLIPモデル (use_fast=True で高速プロセッサを利用)
-clip_model = CLIPModel.from_pretrained(
-    "openai/clip-vit-base-patch32"
-).to(device)
-clip_processor = CLIPProcessor.from_pretrained(
-    "openai/clip-vit-base-patch32", use_fast=False
-)
-# CLIP用ラベル
-clip_labels = [
-    "a group photo with many people",
-    "a portrait of a bride and groom couple",
-    "an empty wedding venue scenery"
-]
-
-# MTCNNによる顔検出
+# --- MTCNN 初期化（顔検出用） ---
 mtcnn = MTCNN(keep_all=True, device=device)
 
-# --- 補助関数 ---
+# --- 画像フォルダ指定 ---
+img_dir = "data/group"
+paths = [os.path.join(img_dir, fname) for fname in os.listdir(img_dir) if fname.lower().endswith((".png", ".jpg", ".jpeg"))]
 
-def get_exif_datetime(img_path):
-    """EXIFの撮影日時を取得"""
-    try:
-        img = Image.open(img_path)
-        exif = img._getexif() or {}
-        for tag, val in exif.items():
-            decoded = TAGS.get(tag, tag)
-            if decoded == 'DateTimeOriginal':
-                return datetime.strptime(val, "%Y:%m:%d %H:%M:%S")
-    except Exception:
-        pass
-    return None
+# --- VGG16 特徴抽出モデル設定 ---
+vgg_model = models.vgg16(pretrained=True).features.eval().to(device)
+vgg_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
+])
 
-
-def count_faces(img_path):
-    """MTCNNを使って画像内の顔をカウント"""
-    try:
-        img = Image.open(img_path).convert('RGB')
-        boxes, _ = mtcnn.detect(img)
-        return len(boxes) if boxes is not None else 0
-    except:
-        return 0
-
-
-def clip_zero_shot(img_path, labels):
-    """CLIPでラベルとの類似度スコアを返す"""
+# --- 画像特徴抽出 ---
+def get_vgg_embedding(img_path):
     img = Image.open(img_path).convert("RGB")
-    inputs = clip_processor(text=labels, images=img, return_tensors="pt", padding=True).to(device)
-    outputs = clip_model(**inputs)
-    probs = outputs.logits_per_image.softmax(dim=1)[0].cpu().tolist()
-    return dict(zip(labels, probs))
+    tensor = vgg_transform(img).unsqueeze(0).to(device)
+    with torch.no_grad():
+        features = vgg_model(tensor)
+        emb = torch.flatten(features, start_dim=1)
+    return emb.squeeze().cpu()
 
+# --- 顔数カウント（MTCNN） ---
+def count_faces(img_path):
+    img = Image.open(img_path).convert("RGB")
+    boxes, _ = mtcnn.detect(img)
+    return 0 if boxes is None else len(boxes)
 
+# --- 顔数による分類 ---
 def classify_image(img_path, face_thresh=3):
-    """顔検出＋CLIPによるゼロショット分類"""
-    n_faces = count_faces(img_path)
-    if n_faces == 0:
+    n = count_faces(img_path)
+    if n == 0:
         return "会場写真"
-    if n_faces >= face_thresh:
+    elif n >= face_thresh:
         return "集合写真"
-    if n_faces == 2:
-        scores = clip_zero_shot(img_path, clip_labels)
-        top = max(scores, key=scores.get)
-        return "新郎新婦の写真" if top == clip_labels[1] else "集合写真"
-    if n_faces == 1:
+    elif n in [1, 2]:
         return "顔写真"
-    return "その他"
+    else:
+        return "その他"
 
-
-def group_by_classification(image_paths):
-    """分類ルールに沿ってカテゴリごとに画像パスをグルーピング"""
-    groups = defaultdict(list)
-    for path in image_paths:
-        cat = classify_image(path)
-        groups[cat].append(path)
+# --- 大分類：顔数ごとのグループ ---
+def group_by_classification(paths):
+    groups = {}
+    for p in paths:
+        label = classify_image(p)
+        groups.setdefault(label, []).append(p)
     return groups
 
+# --- 目線判定（OpenCV Haar Cascade） ---
+def is_eye_contact(img_path):
+    image = cv2.imread(img_path)
+    if image is None:
+        return False
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-def group_by_datetime(image_paths, threshold_seconds=60):
-    """撮影日時が近いものをまとめるグルーピング"""
-    time_list = []
-    for path in image_paths:
-        dt = get_exif_datetime(path)
-        if dt:
-            time_list.append((path, dt))
-    time_list.sort(key=lambda x: x[1])
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
 
+    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+    for (x, y, w, h) in faces:
+        roi_gray = gray[y:y+h, x:x+w]
+        eyes = eye_cascade.detectMultiScale(roi_gray)
+        if len(eyes) >= 2:
+            return True
+    return False
+
+# --- 類似構図によるグルーピング（VGGベース） ---
+def group_by_vgg_similarity(paths, sim_thresh=0.9):
+    embs = [(p, get_vgg_embedding(p)) for p in paths]
+    used = set()
     groups = []
-    current = []
-    for i, (path, dt) in enumerate(time_list):
-        if i == 0:
-            current = [path]
-        else:
-            prev_dt = time_list[i-1][1]
-            if (dt - prev_dt).total_seconds() <= threshold_seconds:
-                current.append(path)
-            else:
-                groups.append(current)
-                current = [path]
-    if current:
-        groups.append(current)
+    for i, (p1, e1) in enumerate(embs):
+        if p1 in used:
+            continue
+        group = [p1]
+        used.add(p1)
+        for p2, e2 in embs[i+1:]:
+            if p2 in used:
+                continue
+            sim = torch.nn.functional.cosine_similarity(e1, e2, dim=0).item()
+            if sim >= sim_thresh:
+                group.append(p2)
+                used.add(p2)
+        groups.append(group)
+    return {i: g for i, g in enumerate(groups)}
 
-    return {i: grp for i, grp in enumerate(groups)}
-
-
+# --- グループ出力表示 ---
 def print_groups(groups, title):
-    print(f"=== {title} ===")
-    for key, items in groups.items():
-        print(f"\nGroup {key}:")
-        for p in items:
+    print(f"\n--- {title} ---")
+    for key, paths in groups.items():
+        label = f"Group {key}" if isinstance(key, int) else key
+        print(f"[{label}]")
+        for p in paths:
             print(f"  - {os.path.basename(p)}")
 
+# --- メイン処理 ---
+if __name__ == "__main__":
+    # 大分類（顔数）
+    main_groups = group_by_classification(paths)
+    print_groups(main_groups, "【大分類】顔・集合・会場など")
 
-if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser(
-        description="結婚式画像の分類と撮影日時グルーピング"
-    )
-    # positional argument with default
-    parser.add_argument(
-        'input_folder',
-        nargs='?', default='.',
-        help="対象フォルダパス (省略時はカレントディレクトリ)"
-    )
-    args = parser.parse_args()
+    # 顔写真：目線あり/なし分類
+    if '顔写真' in main_groups:
+        face_paths = main_groups['顔写真']
+        eye_groups = {'目線あり': [], '目線なし': []}
+        for p in face_paths:
+            key = '目線あり' if is_eye_contact(p) else '目線なし'
+            eye_groups[key].append(p)
+        print_groups(eye_groups, "【顔写真の細分類】目線あり/なし")
 
-    # 対象画像リスト取得
-    image_paths = [
-        os.path.join(args.input_folder, f)
-        for f in os.listdir(args.input_folder)
-        if f.lower().endswith(('.jpg', '.jpeg', '.png'))
-    ]
-    if not image_paths:
-        print("画像が見つかりません。")
-        exit()
-
-    # 1. 分類結果
-    classification_groups = group_by_classification(image_paths)
-    print_groups(classification_groups, "分類結果 (顔検出＋CLIP)")
-
-    # 2. 撮影日時グルーピング
-    datetime_groups = group_by_datetime(image_paths)
-    print_groups(datetime_groups, "グルーピング結果 (撮影日時)")
+    # 構図類似度（VGG特徴量）でのグルーピング
+    for label in ['集合写真', '会場写真']:
+        if label in main_groups:
+            sub = group_by_vgg_similarity(main_groups[label])
+            print_groups(sub, f"【{label}の細分類】構図類似度")
