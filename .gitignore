@@ -1,0 +1,6 @@
+# python venv
+/venv
+
+# clone dlib from https://github.com/davisking/dlib
+/dlib
+
